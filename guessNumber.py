@@ -2,6 +2,7 @@ import random
 import time
 import sqlite3  # Add import at the top
 import json  # Add this import at the top
+from regression import initialize_model, predict_next_guess  # Import both functions
 
 class GuessNumberGame:
     def __init__(self):
@@ -52,7 +53,18 @@ class GuessNumberGame:
     def start_game(self):
         if not self.current_user:
             self.handle_user_auth()
-        
+
+        try:
+            self.ai_model = initialize_model()  # Initialize the AI model
+        except Exception as e:  # Catch any exception raised by initialize_model
+            print(f"Error initializing AI model: {e}")
+            print(f"Player only mode is active")
+            print("Welcome to the 'Guess the Number' game!")
+            self.choose_level()  # Choosing the difficulty level
+            self.choose_range()  # Specifying the number range
+            self.play_human_only_game()  # Switch to human-only mode
+            
+
         print("Welcome to the 'Guess the Number' game!")
         self.choose_level()  # Choosing the difficulty level
         self.choose_range()  # Specifying the number range
@@ -151,59 +163,112 @@ class GuessNumberGame:
                 print("Please enter correct numbers.")
 
     def play_game(self):
-        self.number_to_guess = random.randint(self.range_min, self.range_max)  # Generating a random number
-        attempts = []  # Array to store all attempts
+        self.number_to_guess = random.randint(self.range_min, self.range_max)
+        human_attempts = []
+        ai_attempts = []
         print("\nGame started! Guess the number.")
+        last_feedback = None
+        ai_user_id = self.ensure_ai_user()
+        ai_won = False
+        human_won = False
         
-        while len(attempts) < self.max_attempts:
-            guess_input = input(f"Attempt {len(attempts) + 1}/{self.max_attempts}. Enter a number: ").strip()
+        while len(human_attempts) < self.max_attempts:
+            # AI's turn
+            ai_guess = self.get_ai_guess(
+                ai_attempts[-1] if ai_attempts else None,
+                last_feedback,
+                len(ai_attempts)
+            )
+            ai_attempts.append(ai_guess)
+            
+            # Check if AI won
+            if ai_guess == self.number_to_guess and not human_won:
+                print(f"AI won in {len(ai_attempts)} attempts!")
+                ai_won = True
+                
+                # Store AI game result
+                self.cursor.execute('''
+                    INSERT INTO game_stats 
+                    (user_id, difficulty, attempts_array, attempts_count, won, number_to_guess, range_min, range_max)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (ai_user_id,
+                      list(self.levels.keys())[list(self.levels.values()).index(self.max_attempts)],
+                      json.dumps(ai_attempts),
+                      len(ai_attempts),
+                      True, 
+                      self.number_to_guess, 
+                      self.range_min, 
+                      self.range_max))
+                self.conn.commit()
+            
+            # Human's turn
+            guess_input = input(f"Attempt {len(human_attempts) + 1}/{self.max_attempts}. Enter a number: ").strip()
             if not guess_input.isdigit():
                 print("Please enter a correct number.")
                 continue
 
             guess = int(guess_input)
-            attempts.append(guess)  # Store each attempt in the array
+            human_attempts.append(guess)
+            
+            print(f"AI guessed: {ai_guess} (You guessed: {guess})")
 
             if guess == self.number_to_guess:
-                print(f"Congratulations! You guessed the number {self.number_to_guess} in {len(attempts)} attempts!")
+                print(f"Congratulations! You guessed the number {self.number_to_guess} in {len(human_attempts)} attempts!")
+                human_won = True
                 self.stats["games_played"] += 1
                 self.stats["games_won"] += 1
-                self.best_scores.append(len(attempts))
-                self.best_scores = sorted(self.best_scores)[:5]
                 
-                # Modified database recording to store JSON
+                # Store human game result
                 self.cursor.execute('''
                     INSERT INTO game_stats 
                     (user_id, difficulty, attempts_array, attempts_count, won, number_to_guess, range_min, range_max)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (self.current_user,
                       list(self.levels.keys())[list(self.levels.values()).index(self.max_attempts)],
-                      json.dumps(attempts),  # Convert list to JSON
-                      len(attempts),
+                      json.dumps(human_attempts),
+                      len(human_attempts),
                       True, 
                       self.number_to_guess, 
                       self.range_min, 
                       self.range_max))
                 self.conn.commit()
                 break
+            
             elif guess < self.number_to_guess:
                 print("The number is higher!")
+                last_feedback = 1
             else:
                 print("The number is lower!")
-        else:
-            print(f"You lost! The number was: {self.number_to_guess}")
+                last_feedback = -1
+
+        if not human_won and not ai_won:
+            print(f"Both you and AI lost! The number was: {self.number_to_guess}")
             self.stats["games_played"] += 1
             self.stats["games_lost"] += 1
             
-            # Modified database recording for losses with JSON
+            # Store human loss
             self.cursor.execute('''
                 INSERT INTO game_stats 
                 (user_id, difficulty, attempts_array, attempts_count, won, number_to_guess, range_min, range_max)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ''', (self.current_user,
                   list(self.levels.keys())[list(self.levels.values()).index(self.max_attempts)],
-                  json.dumps(attempts),  # Convert list to JSON
-                  len(attempts),
+                  json.dumps(human_attempts),
+                  len(human_attempts),
+                  False, 
+                  self.number_to_guess, 
+                  self.range_min, 
+                  self.range_max))
+            
+            # Store AI loss
+            self.cursor.execute('''
+                INSERT INTO game_stats 
+                (user_id, difficulty, attempts_array, attempts_count, won, number_to_guess, range_min, range_max)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (ai_user_id,
+                  list(self.levels.keys())[list(self.levels.values()).index(self.max_attempts)],
+                  json.dumps(ai_attempts),
+                  len(ai_attempts),
                   False, 
                   self.number_to_guess, 
                   self.range_min, 
@@ -212,6 +277,39 @@ class GuessNumberGame:
 
         self.show_stats()
         self.restart_game()
+
+    def get_ai_guess(self, last_guess, feedback, attempt_count):
+        """Calculate what the AI would have guessed in the same situation as the player
+        
+        Args:
+            last_guess (int): The guess that was just made
+            feedback (int): -1 if guess was too high, 1 if too low, None if first guess
+            attempt_count (int): The attempt number that was just completed
+            
+        Returns:
+            int: What the AI would have guessed in this situation
+        """
+        # For first guess (no previous feedback)
+        if feedback is None:
+            return (self.range_max + self.range_min) // 2  # Start with middle of range
+        
+        # Use the AI model for subsequent guesses
+        ai_guess = predict_next_guess(
+            self.ai_model,
+            range_start=self.range_min,
+            range_end=self.range_max,
+            last_guess=last_guess,
+            attempt_count=attempt_count,
+            feedback=feedback
+        )
+        
+        # Ensure guess stays within valid range
+        ai_guess = max(self.range_min, min(self.range_max, ai_guess))
+        
+        # Round to nearest integer since we're guessing whole numbers
+        ai_guess = round(ai_guess)
+        
+        return ai_guess
 
     def show_stats(self):
         print("\nGame Statistics from Database:")
@@ -268,6 +366,87 @@ class GuessNumberGame:
         """Cleanup database connection"""
         if hasattr(self, 'conn'):
             self.conn.close()
+
+    def ensure_ai_user(self):
+        """Ensure AI user exists in the database"""
+        AI_EMAIL = "ai.player@game.com"
+        AI_PASSWORD = "ai_password"  # In real app, use secure password
+        
+        # Check if AI user exists
+        self.cursor.execute('SELECT id FROM users WHERE email = ?', (AI_EMAIL,))
+        result = self.cursor.fetchone()
+        
+        if result:
+            return result[0]
+        
+        # Create AI user if doesn't exist
+        self.cursor.execute('INSERT INTO users (email, password) VALUES (?, ?)',
+                           (AI_EMAIL, AI_PASSWORD))
+        self.conn.commit()
+        return self.cursor.lastrowid
+
+    def play_human_only_game(self):
+        """Play the game in human-only mode without AI."""
+        self.number_to_guess = random.randint(self.range_min, self.range_max)
+        human_attempts = []
+        print("\nGame started in human-only mode! Guess the number.")
+        
+        while len(human_attempts) < self.max_attempts:
+            guess_input = input(f"Attempt {len(human_attempts) + 1}/{self.max_attempts}. Enter a number: ").strip()
+            if not guess_input.isdigit():
+                print("Please enter a correct number.")
+                continue
+
+            guess = int(guess_input)
+            human_attempts.append(guess)
+
+            if guess == self.number_to_guess:
+                print(f"Congratulations! You guessed the number {self.number_to_guess} in {len(human_attempts)} attempts!")
+                self.stats["games_played"] += 1
+                self.stats["games_won"] += 1
+                
+                # Store human game result on win
+                self.cursor.execute(''' 
+                    INSERT INTO game_stats 
+                    (user_id, difficulty, attempts_array, attempts_count, won, number_to_guess, range_min, range_max)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (self.current_user,
+                      list(self.levels.keys())[list(self.levels.values()).index(self.max_attempts)],
+                      json.dumps(human_attempts),
+                      len(human_attempts),
+                      True, 
+                      self.number_to_guess, 
+                      self.range_min, 
+                      self.range_max))
+                self.conn.commit()
+                break
+            elif guess < self.number_to_guess:
+                print("The number is higher!")
+            else:
+                print("The number is lower!")
+
+        if len(human_attempts) >= self.max_attempts:
+            print(f"You lost! The number was: {self.number_to_guess}")
+            self.stats["games_played"] += 1
+            self.stats["games_lost"] += 1
+            
+            # Store human game result on loss
+            self.cursor.execute(''' 
+                INSERT INTO game_stats 
+                (user_id, difficulty, attempts_array, attempts_count, won, number_to_guess, range_min, range_max)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (self.current_user,
+                  list(self.levels.keys())[list(self.levels.values()).index(self.max_attempts)],
+                  json.dumps(human_attempts),
+                  len(human_attempts),
+                  False, 
+                  self.number_to_guess, 
+                  self.range_min, 
+                  self.range_max))
+            self.conn.commit()
+
+        self.show_stats()
+        self.restart_game()
 
 
 if __name__ == "__main__":

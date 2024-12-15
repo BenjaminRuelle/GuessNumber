@@ -2,6 +2,7 @@ import sqlite3
 import random
 import json
 from datetime import datetime, timedelta
+from regression import initialize_model, predict_next_guess
 
 def generate_realistic_attempts(target, min_val, max_val, max_attempts):
     """Generate realistic sequence of guesses based on binary search with some randomness"""
@@ -29,21 +30,76 @@ def generate_realistic_attempts(target, min_val, max_val, max_attempts):
             
     return attempts
 
+def simulate_ai_game(model, target, range_min, range_max, player_attempts):
+    """Simulate AI guesses for the same game"""
+    ai_attempts = []
+    last_guess = (range_max + range_min) // 2  # Start with middle
+    ai_attempts.append(last_guess)
+    
+    for attempt_count in range(1, len(player_attempts)):
+        if last_guess == target:
+            break
+            
+        # Determine feedback for the last guess
+        if last_guess > target:
+            feedback = -1
+        elif last_guess < target:
+            feedback = 1
+        else:
+            feedback = 0
+            
+        # Get AI's next guess
+        next_guess = predict_next_guess(
+            model,
+            range_min,
+            range_max,
+            last_guess,
+            attempt_count,
+            feedback
+        )
+        
+        ai_attempts.append(next_guess)
+        last_guess = next_guess
+        
+        if last_guess == target:
+            break
+            
+    return ai_attempts
+
 def simulate_games():
+    # Initialize the AI model
+    print("Initializing AI model...")
+    try:
+        model = initialize_model()
+    except Exception as e:
+        print(f"Failed to initialize AI model: {e}")
+        model = None  # Set model to None if initialization fails
+    
     # Connect to database
     conn = sqlite3.connect('guessNumber.db')
     cursor = conn.cursor()
+    
+    # Add AI player if not exists
+    cursor.execute('INSERT OR IGNORE INTO users (email, password) VALUES (?, ?)', 
+                  ('ai.player@game.com', 'test'))
+    cursor.execute('SELECT id FROM users WHERE email = ?', ('ai.player@game.com',))
+    ai_user_id = cursor.fetchone()[0]
     
     # Difficulty levels configuration
     levels = {"easy": 10, "medium": 7, "hard": 5}
     
     # Generate 5 players
     players = [
-        ("player1@test.com", "password123"),
-        ("player2@test.com", "password456"),
-        ("player3@test.com", "password789"),
-        ("player4@test.com", "passwordabc"),
-        ("player5@test.com", "passworddef")
+        ("player1@test.com", "test"),
+        ("player2@test.com", "test"),
+        ("player3@test.com", "test"),
+        ("player4@test.com", "test"),
+        ("player5@test.com", "test"),
+        ("player6@test.com", "test"),
+        ("player7@test.com", "test"),
+        ("player8@test.com", "test"),
+        ("player9@test.com", "test"),
+        ("player10@test.com", "test")
     ]
     
     # Register players
@@ -80,6 +136,16 @@ def simulate_games():
                 number_to_guess, range_min, range_max, max_attempts
             )
             
+            # Generate AI attempts for the same game only if model is available
+            if model:
+                ai_attempts = simulate_ai_game(
+                    model, number_to_guess, range_min, range_max, attempts
+                )
+                ai_won = ai_attempts[-1] == number_to_guess
+            else:
+                ai_attempts = []
+                ai_won = False
+            
             # Determine if game was won
             won = attempts[-1] == number_to_guess
             
@@ -91,7 +157,7 @@ def simulate_games():
             )
             
             # Insert game data
-            cursor.execute('''
+            cursor.execute(''' 
                 INSERT INTO game_stats 
                 (user_id, timestamp, difficulty, attempts_array, attempts_count, 
                  won, number_to_guess, range_min, range_max)
@@ -107,6 +173,25 @@ def simulate_games():
                 range_min,
                 range_max
             ))
+            
+            # Insert AI game data only if AI model was available
+            if model:
+                cursor.execute(''' 
+                    INSERT INTO game_stats 
+                    (user_id, timestamp, difficulty, attempts_array, attempts_count, 
+                     won, number_to_guess, range_min, range_max)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    ai_user_id,
+                    game_time.strftime('%Y-%m-%d %H:%M:%S'),
+                    difficulty,
+                    json.dumps(ai_attempts),
+                    len(ai_attempts),
+                    ai_won,
+                    number_to_guess,
+                    range_min,
+                    range_max
+                ))
             
     conn.commit()
     conn.close()

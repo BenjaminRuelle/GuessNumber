@@ -19,6 +19,11 @@ output_file("game_analytics.html")
 query1 = """
 SELECT number_to_guess, COUNT(*) as frequency
 FROM game_stats
+WHERE user_id != (
+        SELECT id 
+        FROM users 
+        WHERE email = 'ai.player@game.com'
+    )
 GROUP BY number_to_guess
 """
 df_numbers = pd.read_sql_query(query1, conn)
@@ -43,6 +48,11 @@ SELECT
     JSON_EXTRACT(attempts_array, '$[0]') as first_guess,
     number_to_guess
 FROM game_stats
+WHERE user_id != (
+        SELECT id 
+        FROM users 
+        WHERE email = 'ai.player@game.com'
+    )
 """
 df_first_guess = pd.read_sql_query(query2, conn)
 df_first_guess['first_guess'] = df_first_guess['first_guess'].astype(float)
@@ -66,6 +76,11 @@ SELECT
     (range_max - range_min) as range_size,
     AVG(CASE WHEN won = 1 THEN 1.0 ELSE 0.0 END) as win_rate
 FROM game_stats
+WHERE user_id != (
+        SELECT id 
+        FROM users 
+        WHERE email = 'ai.player@game.com'
+    )
 GROUP BY range_size
 """
 df_range = pd.read_sql_query(query3, conn)
@@ -87,6 +102,11 @@ query4 = """
 SELECT difficulty, attempts_count
 FROM game_stats
 WHERE won = 1
+AND user_id != (
+        SELECT id 
+        FROM users 
+        WHERE email = 'ai.player@game.com'
+    )
 """
 df_dist = pd.read_sql_query(query4, conn)
 
@@ -134,6 +154,11 @@ SELECT
         OVER (PARTITION BY u.id ORDER BY g.timestamp) as cumulative_wins
 FROM game_stats g
 JOIN users u ON g.user_id = u.id
+WHERE g.user_id != (
+        SELECT id 
+        FROM users 
+        WHERE email = 'ai.player@game.com'
+    )
 """
 df_streak = pd.read_sql_query(query5, conn)
 df_streak['timestamp'] = pd.to_datetime(df_streak['timestamp'])
@@ -179,6 +204,11 @@ SELECT
     range_max,
     AVG(CASE WHEN won = 1 THEN 1.0 ELSE 0.0 END) as success_rate
 FROM game_stats
+WHERE user_id != (
+        SELECT id 
+        FROM users 
+        WHERE email = 'ai.player@game.com'
+    )
 GROUP BY range_min, range_max
 """
 df_range_success = pd.read_sql_query(query6, conn)
@@ -216,11 +246,115 @@ p6.add_tools(HoverTool(tooltips=[
 p6.xaxis.axis_label = 'Minimum Range'
 p6.yaxis.axis_label = 'Maximum Range'
 
+# Win Rate Comparison
+query_win_rate = """
+SELECT 
+    CASE 
+        WHEN user_id = (SELECT id FROM users WHERE email = 'ai.player@game.com') THEN 'AI'
+        ELSE u.email 
+    END as player,
+    AVG(CASE WHEN won = 1 THEN 1.0 ELSE 0.0 END) as win_rate
+FROM game_stats g
+JOIN users u ON g.user_id = u.id
+GROUP BY player
+"""
+
+df_win_rate = pd.read_sql_query(query_win_rate, conn)
+
+p_win_rate = figure(x_range=df_win_rate['player'], title="Win Rate Comparison",
+                    x_axis_label='Player', y_axis_label='Win Rate', width=800, height=400)
+
+p_win_rate.vbar(x='player', top='win_rate', width=0.9, source=ColumnDataSource(df_win_rate),
+                fill_color=transform('win_rate', LinearColorMapper(palette=RdYlBu11, low=0, high=1)))
+
+p_win_rate.yaxis.formatter = NumeralTickFormatter(format='0.0%')
+p_win_rate.add_tools(HoverTool(tooltips=[('Player', '@player'), ('Win Rate', '@win_rate{0.0%}')]))
+
+# Query to select games for benjaminruelle42@gmail.com and ai.player@game.com with the same target value and matching timestamps
+query_games = """
+SELECT
+    g.user_id,
+    g.number_to_guess,
+    JSON_EXTRACT(g.attempts_array, '$') as attempts_array,
+    g.timestamp,
+    u.email,
+    g2.number_to_guess AS ai_number_to_guess,
+    g2.timestamp AS ai_timestamp
+FROM game_stats g
+JOIN users u ON g.user_id = u.id
+JOIN game_stats g2 ON g.timestamp = g2.timestamp
+WHERE g2.user_id = (SELECT id FROM users WHERE email = 'ai.player@game.com')
+AND g.user_id = (SELECT id FROM users WHERE email = 'player1@test.com')
+UNION ALL  -- Include both player's and AI's data
+SELECT
+    g2.user_id,
+    g2.number_to_guess,
+    JSON_EXTRACT(g2.attempts_array, '$') as attempts_array,
+    g2.timestamp,
+    u2.email,
+    g2.number_to_guess AS ai_number_to_guess,
+    g2.timestamp AS ai_timestamp
+FROM game_stats g2
+JOIN users u2 ON g2.user_id = u2.id
+WHERE g2.user_id = (SELECT id FROM users WHERE email = 'ai.player@game.com')
+AND g2.timestamp IN (
+    SELECT g.timestamp
+    FROM game_stats g
+    WHERE g.user_id = (SELECT id FROM users WHERE email = 'player1@test.com')
+)
+ORDER BY timestamp;
+"""
+df_games = pd.read_sql_query(query_games, conn)
+
+# Prepare data for plotting
+df_games['attempts_array'] = df_games['attempts_array'].apply(lambda x: json.loads(x))  # Convert JSON string to list
+df_games_exploded = df_games.explode('attempts_array')  # Explode the attempts_array into separate rows
+
+# Create a guess number for each guess after exploding
+df_games_exploded['guess_number'] = df_games_exploded.groupby(['number_to_guess', 'email']).cumcount() + 1  # Create a guess number for each guess
+
+# Group by target value to find games with the same target
+grouped_games = df_games_exploded.groupby('number_to_guess')
+
+# Plotting each guess for each game
+p_guesses = figure(title="IA vs Player 1",
+                   x_axis_label='Guess Number',
+                   y_axis_label='Guess Value',
+                   width=800, height=400, x_range=(1, df_games_exploded['guess_number'].max()))
+
+# Colors for AI and Player
+ai_color = 'blue'
+player_color = 'green'
+
+# Add lines for each game
+for target_value, group in grouped_games:
+    # Separate AI and Player data
+    ai_data = group[group['email'] == 'ai.player@game.com']
+    player_data = group[group['email'] == 'player1@test.com']
+    
+    # Plot AI guesses
+    p_guesses.line(ai_data['guess_number'], ai_data['attempts_array'], line_width=2, color=ai_color, legend_label="AI Guesses", name="AI")
+    
+    # Plot Player guesses
+    p_guesses.line(player_data['guess_number'], player_data['attempts_array'], line_width=2, color=player_color, legend_label="Player Guesses", name="Player")
+    
+    # Add target value as a line without a legend label
+    p_guesses.line([0, player_data['guess_number'].max()], [target_value, target_value], line_color='red', line_dash='dashed')
+
+# Set legend properties
+p_guesses.legend.click_policy = "hide"  # Add click policy to hide/show lines
+p_guesses.legend.location = "top_left"  # Set legend location
+
+
+# Set legend location
+p_guesses.legend.location = "top_left"
+
 # Arrange all plots in a grid
 layout = grid([
     [p1, p2],
     [p3, p4],
-    [p5, p6]
+    [p5, p6],
+    [p_win_rate, p_guesses]
 ], sizing_mode="stretch_width")
 
 # Save all plots to a single HTML file
