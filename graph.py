@@ -333,21 +333,22 @@ for target_value, group in grouped_games:
     player_data = group[group['email'] == 'player1@test.com']
     
     # Plot AI guesses
-    p_guesses.line(ai_data['guess_number'], ai_data['attempts_array'], line_width=2, color=ai_color, legend_label="AI Guesses", name="AI")
+    p_guesses.line(ai_data['guess_number'], ai_data['attempts_array'], 
+                   line_width=2, color=ai_color, 
+                   legend_label="AI Guesses")
     
     # Plot Player guesses
-    p_guesses.line(player_data['guess_number'], player_data['attempts_array'], line_width=2, color=player_color, legend_label="Player Guesses", name="Player")
+    p_guesses.line(player_data['guess_number'], player_data['attempts_array'], 
+                   line_width=2, color=player_color, 
+                   legend_label="Player Guesses")
     
     # Add target value as a line without a legend label
-    p_guesses.line([0, player_data['guess_number'].max()], [target_value, target_value], line_color='red', line_dash='dashed')
+    p_guesses.line([0, player_data['guess_number'].max()], [target_value, target_value], 
+                   line_color='red', line_dash='dashed')
 
 # Set legend properties
-p_guesses.legend.click_policy = "hide"  # Add click policy to hide/show lines
+p_guesses.legend.click_policy = "hide"  # This will now work as legends are added
 p_guesses.legend.location = "top_left"  # Set legend location
-
-
-# Set legend location
-p_guesses.legend.location = "top_left"
 
 # Arrange all plots in a grid
 layout = grid([
